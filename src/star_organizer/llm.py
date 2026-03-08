@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from openai import AsyncOpenAI
@@ -44,33 +45,17 @@ def _build_existing_lists(lists: list[StarList]) -> str:
     return "\n".join(f"- {sl.name}" for sl in lists)
 
 
-async def categorize_repos(
+async def _categorize_batch(
+    client: AsyncOpenAI,
     cfg: LLMConfig,
-    repos: list[StarredRepo],
+    batch: list[StarredRepo],
     existing_lists: list[StarList],
-    on_batch: callable = None,
-) -> CategorizationResult:
-    """Use LLM to categorize repos into lists.
-
-    on_batch(batch_idx, total_batches) is called before each batch if provided.
-    """
-    client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
-    all_assignments: list[Assignment] = []
-    all_new_lists: set[str] = set()
-
-    known_list_names = {sl.name for sl in existing_lists}
-    batches = [repos[i : i + BATCH_SIZE] for i in range(0, len(repos), BATCH_SIZE)]
-
-    for batch_idx, batch in enumerate(batches):
-        if on_batch:
-            on_batch(batch_idx + 1, len(batches), len(batch))
-
-        all_lists_for_prompt = list(existing_lists) + [
-            StarList(id="", name=n) for n in all_new_lists
-        ]
-
+    semaphore: asyncio.Semaphore,
+) -> tuple[list[Assignment], set[str]]:
+    """Categorize a single batch of repos with concurrency control."""
+    async with semaphore:
         prompt = USER_PROMPT_TEMPLATE.format(
-            existing_lists=_build_existing_lists(all_lists_for_prompt),
+            existing_lists=_build_existing_lists(existing_lists),
             repo_summaries=_build_repo_summaries(batch),
         )
 
@@ -87,13 +72,52 @@ async def categorize_repos(
         content = resp.choices[0].message.content or "{}"
         data = json.loads(content)
 
-        for a in data.get("assignments", []):
-            all_assignments.append(Assignment(repo=a["repo"], list_name=a["list"]))
+        assignments = [
+            Assignment(repo=a["repo"], list_name=a["list"])
+            for a in data.get("assignments", [])
+        ]
+        new_lists = set(data.get("new_lists", []))
+        return assignments, new_lists
 
-        for new_name in data.get("new_lists", []):
-            if new_name not in known_list_names:
-                all_new_lists.add(new_name)
-                known_list_names.add(new_name)
+
+async def categorize_repos(
+    cfg: LLMConfig,
+    repos: list[StarredRepo],
+    existing_lists: list[StarList],
+    on_batch: callable = None,
+) -> CategorizationResult:
+    """Use LLM to categorize repos into lists with concurrent batch processing.
+
+    on_batch(batch_idx, total_batches, count) is called as batches complete.
+    """
+    client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+    semaphore = asyncio.Semaphore(cfg.concurrency)
+
+    known_list_names = {sl.name for sl in existing_lists}
+    batches = [repos[i : i + BATCH_SIZE] for i in range(0, len(repos), BATCH_SIZE)]
+
+    completed = 0
+
+    async def run_batch(batch_idx: int, batch: list[StarredRepo]):
+        nonlocal completed
+        result = await _categorize_batch(client, cfg, batch, existing_lists, semaphore)
+        completed += 1
+        if on_batch:
+            on_batch(completed, len(batches), len(batch))
+        return result
+
+    results = await asyncio.gather(
+        *(run_batch(i, batch) for i, batch in enumerate(batches))
+    )
+
+    all_assignments: list[Assignment] = []
+    all_new_lists: set[str] = set()
+    for assignments, new_lists in results:
+        all_assignments.extend(assignments)
+        for name in new_lists:
+            if name not in known_list_names:
+                all_new_lists.add(name)
+                known_list_names.add(name)
 
     return CategorizationResult(
         assignments=all_assignments,

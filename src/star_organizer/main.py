@@ -153,41 +153,48 @@ async def run(dry_run: bool = False, no_cache: bool = False, config_path: Path |
         # Step 4: Execute
         list_name_to_id: dict[str, str] = {sl.name: sl.id for sl in existing_lists}
 
-        # 4a. Create new lists
+        # 4a. Create new lists (concurrently)
+        gh_sem = asyncio.Semaphore(cfg.concurrency)
+
         if result.new_lists:
             with _make_progress() as progress:
                 task = progress.add_task("Creating lists...", total=len(result.new_lists))
-                for name in result.new_lists:
-                    progress.update(task, description=f"Creating list: {name}")
-                    new_list = await web.create_list(name, repos[0])
-                    if new_list:
-                        list_name_to_id[new_list.name] = new_list.id
-                    else:
-                        console.print(f"  [red]Failed to create: {name}[/red]")
-                    progress.advance(task)
 
-        # 4b. Assign repos
+                async def _create_one(name: str) -> None:
+                    async with gh_sem:
+                        new_list = await web.create_list(name, repos[0])
+                        if new_list:
+                            list_name_to_id[new_list.name] = new_list.id
+                        else:
+                            console.print(f"  [red]Failed to create: {name}[/red]")
+                        progress.advance(task)
+
+                await asyncio.gather(*(_create_one(n) for n in result.new_lists))
+
+        # 4b. Assign repos (concurrently)
         repo_by_name = {r.full_name: r for r in repos}
 
         with _make_progress() as progress:
             task = progress.add_task("Assigning repos...", total=len(result.assignments))
 
-            for a in result.assignments:
+            async def _assign_one(a) -> None:
                 repo = repo_by_name.get(a.repo)
                 if not repo:
                     progress.advance(task)
-                    continue
+                    return
 
                 target_id = list_name_to_id.get(a.list_name)
                 if not target_id:
                     progress.advance(task)
-                    continue
+                    return
 
-                progress.update(task, description=f"Assigning {a.repo} → {a.list_name}")
-                ok = await web.assign_repo(repo, [target_id])
-                if not ok:
-                    console.print(f"  [red]Failed: {a.repo} → {a.list_name}[/red]")
-                progress.advance(task)
+                async with gh_sem:
+                    ok = await web.assign_repo(repo, [target_id])
+                    if not ok:
+                        console.print(f"  [red]Failed: {a.repo} → {a.list_name}[/red]")
+                    progress.advance(task)
+
+            await asyncio.gather(*(_assign_one(a) for a in result.assignments))
 
         elapsed_total = time.monotonic() - t_total
         console.print(f"[bold green]Done![/bold green] [dim]Total: {elapsed_total:.1f}s[/dim]")

@@ -6,7 +6,10 @@ token = "ghp_xxxx"           # GitHub personal access token
 # Copy full cookie string from browser DevTools → Network tab → any github.com request → Headers → Cookie
 cookies = "_octo=...; user_session=...; logged_in=yes; ..."
 
+concurrency = 5                # GitHub web API concurrency (list creation & repo assignment)
+
 [llm]
 base_url = "https://api.openai.com/v1"
 api_key = "sk-xxxx"
 model = "gpt-4o"
+concurrency = 3                # Max concurrent LLM batch requests

@@ -46,6 +46,7 @@ def _to_curl(
     headers: dict[str, str],
     cookies: dict[str, str],
     *,
+    data: dict[str, str] | None = None,
     files: dict[str, tuple[None, str]] | list[tuple[str, tuple[None, str]]] | None = None,
 ) -> str:
     """Build a reproducible curl command from request parameters."""
@@ -60,6 +61,11 @@ def _to_curl(
     if cookie_str:
         parts.append(f"--header 'Cookie: {cookie_str}'")
 
+    if data is not None:
+        for name, value in data.items():
+            escaped = value.replace("'", "'\\''")
+            parts.append(f"--data-urlencode '{name}={escaped}'")
+
     if files is not None:
         items: list[tuple[str, str]] = []
         if isinstance(files, dict):
@@ -67,7 +73,6 @@ def _to_curl(
         else:
             items = [(k, v[1]) for k, v in files]
         for name, value in items:
-            # Escape single quotes in value
             escaped = value.replace("'", "'\\''")
             parts.append(f"--form '{name}=\"{escaped}\"'")
 
@@ -243,6 +248,7 @@ async def create_star_list(
         **_BROWSER_HEADERS,
         "Accept": "text/html",
         "Referer": f"https://github.com/{cfg.username}?tab=stars",
+        "X-Requested-With": "XMLHttpRequest",
     }
     cookies = _build_cookies(cfg)
 
