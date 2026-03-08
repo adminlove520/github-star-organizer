@@ -10,25 +10,119 @@ from .models import StarList, StarredRepo
 
 console = Console()
 
-# Shared headers mimicking a browser request
+_debug = False
+
 _BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://github.com",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
+
+_SKIP_CURL_HEADERS = {"host", "content-length", "transfer-encoding", "content-type"}
+
+
+def enable_debug() -> None:
+    global _debug
+    _debug = True
 
 
 def _build_cookies(cfg: GitHubConfig) -> dict[str, str]:
-    return {"user_session": cfg.user_session}
+    """Parse the full cookie string into a dict."""
+    cookies: dict[str, str] = {}
+    for pair in cfg.cookies.split(";"):
+        pair = pair.strip()
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
 
 
-def _extract_csrf_token(html: str) -> str:
-    """Extract authenticity_token from HTML form."""
+def _to_curl(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    cookies: dict[str, str],
+    *,
+    files: dict[str, tuple[None, str]] | list[tuple[str, tuple[None, str]]] | None = None,
+) -> str:
+    """Build a reproducible curl command from request parameters."""
+    parts = [f"curl --location '{url}'"]
+
+    for k, v in headers.items():
+        if k.lower() in _SKIP_CURL_HEADERS:
+            continue
+        parts.append(f"--header '{k}: {v}'")
+
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    if cookie_str:
+        parts.append(f"--header 'Cookie: {cookie_str}'")
+
+    if files is not None:
+        items: list[tuple[str, str]] = []
+        if isinstance(files, dict):
+            items = [(k, v[1]) for k, v in files.items()]
+        else:
+            items = [(k, v[1]) for k, v in files]
+        for name, value in items:
+            # Escape single quotes in value
+            escaped = value.replace("'", "'\\''")
+            parts.append(f"--form '{name}=\"{escaped}\"'")
+
+    return " \\\n  ".join(parts)
+
+
+def _debug_dump(
+    label: str,
+    resp: httpx.Response,
+    *,
+    curl_cmd: str | None = None,
+) -> None:
+    """Print debug info for a failed request."""
+    if not _debug:
+        return
+
+    console.print(f"\n[bold red]{'=' * 60}[/bold red]")
+    console.print(f"[bold red]DEBUG: {label}[/bold red]")
+    console.print(f"[bold]Status:[/bold] {resp.status_code}")
+    console.print(f"[bold]URL:[/bold] {resp.request.method} {resp.request.url}")
+
+    console.print(f"\n[bold]Response Headers:[/bold]")
+    for k, v in resp.headers.items():
+        console.print(f"  {k}: {v}")
+
+    console.print(f"\n[bold]Response Body:[/bold]")
+    body = resp.text
+    if len(body) > 2000:
+        console.print(body[:2000])
+        console.print(f"[dim]... truncated ({len(body)} chars total)[/dim]")
+    else:
+        console.print(body)
+
+    if curl_cmd:
+        console.print(f"\n[bold]Curl command to reproduce:[/bold]")
+        console.print(f"[green]{curl_cmd}[/green]")
+
+    console.print(f"[bold red]{'=' * 60}[/bold red]\n")
+
+
+def _extract_csrf_token(html: str, action_url: str | None = None) -> str:
+    """Extract authenticity_token from HTML."""
     soup = BeautifulSoup(html, "html.parser")
+
+    if action_url:
+        form = soup.find("form", {"action": action_url})
+        if form:
+            token = form.find("input", {"name": "authenticity_token"})
+            if token and token.get("value"):
+                return token["value"]
+
     token_input = soup.find("input", {"name": "authenticity_token"})
     if token_input and token_input.get("value"):
         return token_input["value"]
-    raise ValueError("Could not find CSRF token in HTML. Session cookie may be expired.")
+    raise ValueError("Could not find CSRF token. Session cookie may be expired.")
 
 
 async def fetch_star_lists(
@@ -36,16 +130,21 @@ async def fetch_star_lists(
     cfg: GitHubConfig,
     repo: StarredRepo,
 ) -> tuple[list[StarList], str]:
-    """Fetch existing star lists via the repo's list menu endpoint.
-
-    Returns (lists, csrf_token).
-    """
+    """Fetch existing star lists and CSRF token from a repo's list menu."""
     url = f"https://github.com/{repo.full_name}/lists"
-    resp = await client.get(
-        url,
-        headers={**_BROWSER_HEADERS, "X-Requested-With": "XMLHttpRequest"},
-        cookies=_build_cookies(cfg),
-    )
+    headers = {
+        **_BROWSER_HEADERS,
+        "Accept": "text/html",
+        "Referer": f"https://github.com/{repo.full_name}",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    cookies = _build_cookies(cfg)
+
+    resp = await client.get(url, headers=headers, cookies=cookies)
+
+    if resp.status_code != 200:
+        curl = _to_curl("GET", url, headers, cookies)
+        _debug_dump("fetch_star_lists failed", resp, curl_cmd=curl)
     resp.raise_for_status()
 
     html = resp.text
@@ -58,7 +157,6 @@ async def fetch_star_lists(
         list_id = checkbox.get("value", "")
         if not list_id:
             continue
-        # Find the label text (list name)
         label = checkbox.find_parent("label") or checkbox.find_next("label")
         name = ""
         if label:
@@ -70,27 +168,59 @@ async def fetch_star_lists(
     return lists, csrf_token
 
 
-async def fetch_repo_current_lists(
+async def fetch_repo_list_state(
     client: httpx.AsyncClient,
     cfg: GitHubConfig,
     repo: StarredRepo,
-) -> list[str]:
-    """Get list IDs that a repo is currently assigned to."""
+) -> tuple[list[str], str]:
+    """Get a repo's current list assignments AND its CSRF token."""
     url = f"https://github.com/{repo.full_name}/lists"
-    resp = await client.get(
-        url,
-        headers={**_BROWSER_HEADERS, "X-Requested-With": "XMLHttpRequest"},
-        cookies=_build_cookies(cfg),
-    )
+    headers = {
+        **_BROWSER_HEADERS,
+        "Accept": "text/html",
+        "Referer": f"https://github.com/{repo.full_name}",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    cookies = _build_cookies(cfg)
+
+    resp = await client.get(url, headers=headers, cookies=cookies)
+
+    if resp.status_code != 200:
+        curl = _to_curl("GET", url, headers, cookies)
+        _debug_dump("fetch_repo_list_state failed", resp, curl_cmd=curl)
     resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    html = resp.text
+    csrf_token = _extract_csrf_token(html)
+
+    soup = BeautifulSoup(html, "html.parser")
     checked_ids: list[str] = []
     for checkbox in soup.find_all("input", {"type": "checkbox", "name": "list_ids[]", "checked": True}):
         val = checkbox.get("value", "")
         if val:
             checked_ids.append(val)
-    return checked_ids
+    return checked_ids, csrf_token
+
+
+async def _fetch_create_list_csrf(
+    client: httpx.AsyncClient,
+    cfg: GitHubConfig,
+) -> str:
+    """Fetch CSRF token from the stars page (contains the create-list form)."""
+    url = f"https://github.com/{cfg.username}?tab=stars"
+    headers = {
+        **_BROWSER_HEADERS,
+        "Accept": "text/html",
+    }
+    cookies = _build_cookies(cfg)
+
+    resp = await client.get(url, headers=headers, cookies=cookies, follow_redirects=True)
+
+    if resp.status_code != 200:
+        curl = _to_curl("GET", url, headers, cookies)
+        _debug_dump("_fetch_create_list_csrf failed", resp, curl_cmd=curl)
+    resp.raise_for_status()
+    return _extract_csrf_token(resp.text, action_url=f"/stars/{cfg.username}/lists")
 
 
 async def create_star_list(
@@ -100,40 +230,51 @@ async def create_star_list(
     csrf_token: str,
     description: str = "",
 ) -> str | None:
-    """Create a new star list. Returns the list slug from redirect URL."""
+    """Create a new star list via multipart form POST. Returns the list slug."""
     url = f"https://github.com/stars/{cfg.username}/lists"
-    data = {
-        "authenticity_token": csrf_token,
-        "user_list[name]": name,
-        "user_list[description]": description,
-        "user_list[private]": "0",
+
+    files = {
+        "authenticity_token": (None, csrf_token),
+        "user_list[name]": (None, name),
+        "user_list[description]": (None, description),
+        "user_list[private]": (None, "0"),
     }
+    headers = {
+        **_BROWSER_HEADERS,
+        "Accept": "text/html",
+        "Referer": f"https://github.com/{cfg.username}?tab=stars",
+    }
+    cookies = _build_cookies(cfg)
 
     resp = await client.post(
-        url,
-        data=data,
-        headers={**_BROWSER_HEADERS},
-        cookies=_build_cookies(cfg),
-        follow_redirects=False,
+        url, files=files, headers=headers, cookies=cookies, follow_redirects=False,
     )
 
-    # GitHub redirects to the new list page on success
+    # Success: redirect to new list page
     if resp.status_code in (301, 302, 303):
         location = resp.headers.get("location", "")
-        # Extract slug from URL like /stars/username/lists/list-name
         match = re.search(r"/lists/([^/?]+)", location)
         return match.group(1) if match else None
 
-    # Some versions return 200 with a redirect meta tag
+    # GitHub sometimes returns 200 with the full page containing a redirect link
     if resp.status_code == 200:
         soup = BeautifulSoup(resp.text, "html.parser")
+        link = soup.find("a", {"class": "js-target-url"})
+        if link:
+            href = link.get("href", "")
+            match = re.search(r"/lists/([^/?]+)", href)
+            if match:
+                return match.group(1)
+        # Also check meta refresh
         meta = soup.find("meta", {"http-equiv": "refresh"})
         if meta:
             content = meta.get("content", "")
             match = re.search(r"/lists/([^/?]+)", content)
             return match.group(1) if match else None
 
-    console.print(f"[yellow]Warning: status {resp.status_code} creating list '{name}': {resp.text[:200]}[/yellow]")
+    curl = _to_curl("POST", url, headers, cookies, files=files)
+    _debug_dump(f"create_star_list '{name}' failed", resp, curl_cmd=curl)
+    console.print(f"[yellow]Warning: status {resp.status_code} creating list '{name}'[/yellow]")
     return None
 
 
@@ -144,34 +285,34 @@ async def assign_repo_to_lists(
     list_ids: list[str],
     csrf_token: str,
 ) -> bool:
-    """Assign a repo to the given lists (PUT semantics - replaces all assignments)."""
+    """Assign a repo to lists via multipart form POST (PUT semantics)."""
     url = f"https://github.com/{repo.full_name}/lists"
 
-    # Build form data: empty list_ids[] first, then actual IDs
-    # This is required by GitHub's web API
-    form_parts = [
-        ("_method", "put"),
-        ("authenticity_token", csrf_token),
-        ("repository_id", str(repo.id)),
-        ("context", "user_list_menu"),
-        ("list_ids[]", ""),  # Empty value required
+    fields: list[tuple[str, tuple[None, str]]] = [
+        ("_method", (None, "put")),
+        ("authenticity_token", (None, csrf_token)),
+        ("repository_id", (None, str(repo.id))),
+        ("context", (None, "user_list_menu")),
+        ("list_ids[]", (None, "")),
     ]
     for lid in list_ids:
-        form_parts.append(("list_ids[]", lid))
+        fields.append(("list_ids[]", (None, lid)))
 
-    resp = await client.post(
-        url,
-        data=form_parts,
-        headers={
-            **_BROWSER_HEADERS,
-            "X-Requested-With": "XMLHttpRequest",
-        },
-        cookies=_build_cookies(cfg),
-    )
+    headers = {
+        **_BROWSER_HEADERS,
+        "Accept": "application/json",
+        "Referer": f"https://github.com/{repo.full_name}",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    cookies = _build_cookies(cfg)
+
+    resp = await client.post(url, files=fields, headers=headers, cookies=cookies)
 
     if resp.status_code in (200, 302):
         return True
 
+    curl = _to_curl("POST", url, headers, cookies, files=fields)
+    _debug_dump(f"assign_repo_to_lists {repo.full_name} failed", resp, curl_cmd=curl)
     console.print(f"[yellow]Warning: Failed to assign {repo.full_name}, status {resp.status_code}[/yellow]")
     return False
 
@@ -181,43 +322,32 @@ class GitHubWebClient:
 
     def __init__(self, cfg: GitHubConfig):
         self.cfg = cfg
-        self.client = httpx.AsyncClient(timeout=30, follow_redirects=True)
-        self._csrf_token: str | None = None
+        self.client = httpx.AsyncClient(timeout=30)
         self._lists: list[StarList] = []
-        self._delay = 0.8  # seconds between web API calls
+        self._delay = 1.0
 
     async def close(self) -> None:
         await self.client.aclose()
 
     async def get_lists(self, any_repo: StarredRepo) -> list[StarList]:
-        """Fetch star lists, caching the CSRF token."""
-        self._lists, self._csrf_token = await fetch_star_lists(
+        self._lists, _ = await fetch_star_lists(
             self.client, self.cfg, any_repo
         )
         return self._lists
 
-    async def refresh_csrf(self, any_repo: StarredRepo) -> str:
-        """Re-fetch CSRF token (they expire)."""
-        _, self._csrf_token = await fetch_star_lists(
-            self.client, self.cfg, any_repo
-        )
-        return self._csrf_token
-
     async def create_list(self, name: str, any_repo: StarredRepo) -> StarList | None:
-        """Create a list and return it with its ID. Refreshes CSRF before each call."""
-        # Always refresh CSRF — token is single-use for POST
-        await self.refresh_csrf(any_repo)
+        """Create a list. Gets fresh CSRF from the stars page."""
+        csrf = await _fetch_create_list_csrf(self.client, self.cfg)
+        await asyncio.sleep(self._delay)
 
-        slug = await create_star_list(
-            self.client, self.cfg, name, self._csrf_token or ""
-        )
+        slug = await create_star_list(self.client, self.cfg, name, csrf)
         await asyncio.sleep(self._delay)
 
         if slug is None:
             return None
 
-        # Re-fetch lists to get the new list's ID + fresh CSRF
-        self._lists, self._csrf_token = await fetch_star_lists(
+        # Re-fetch lists to get the new list's ID
+        self._lists, _ = await fetch_star_lists(
             self.client, self.cfg, any_repo
         )
         for sl in self._lists:
@@ -228,20 +358,16 @@ class GitHubWebClient:
         return None
 
     async def assign_repo(
-        self, repo: StarredRepo, target_list_ids: list[str], any_repo: StarredRepo
+        self, repo: StarredRepo, target_list_ids: list[str],
     ) -> bool:
-        """Assign repo to lists, merging with existing assignments for idempotency."""
-        # Get current assignments + fresh CSRF from this GET
-        current_ids = await fetch_repo_current_lists(self.client, self.cfg, repo)
+        """Assign repo to lists, merging with existing assignments."""
+        current_ids, csrf = await fetch_repo_list_state(self.client, self.cfg, repo)
         await asyncio.sleep(self._delay)
 
         merged = list(set(current_ids) | set(target_list_ids))
 
-        # Refresh CSRF before POST
-        await self.refresh_csrf(any_repo)
-
         result = await assign_repo_to_lists(
-            self.client, self.cfg, repo, merged, self._csrf_token or ""
+            self.client, self.cfg, repo, merged, csrf
         )
         await asyncio.sleep(self._delay)
         return result

@@ -3,7 +3,8 @@ username = "your-username"
 token = "ghp_xxxx"           # GitHub personal access token
 
 [github.session]
-user_session = "DVI0kn..."   # Copy from browser DevTools → Cookies
+# Copy full cookie string from browser DevTools → Network tab → any github.com request → Headers → Cookie
+cookies = "_octo=...; user_session=...; logged_in=yes; ..."
 
 [llm]
 base_url = "https://api.openai.com/v1"

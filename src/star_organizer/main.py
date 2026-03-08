@@ -18,7 +18,7 @@ from .cache import (
 )
 from .config import load_config
 from .github_api import fetch_starred_repos
-from .github_web import GitHubWebClient
+from .github_web import GitHubWebClient, enable_debug
 from .llm import categorize_repos
 
 console = Console()
@@ -181,7 +181,7 @@ async def run(dry_run: bool = False, no_cache: bool = False, config_path: Path |
                     continue
 
                 progress.update(task, description=f"Assigning {a.repo} → {a.list_name}")
-                ok = await web.assign_repo(repo, [target_id], repos[0])
+                ok = await web.assign_repo(repo, [target_id])
                 if not ok:
                     console.print(f"  [red]Failed: {a.repo} → {a.list_name}[/red]")
                 progress.advance(task)
@@ -197,6 +197,9 @@ def main() -> None:
     dry_run = "--dry-run" in sys.argv
     no_cache = "--no-cache" in sys.argv
     config_path = None
+
+    if "--debug" in sys.argv:
+        enable_debug()
 
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--config" and i < len(sys.argv) - 1:

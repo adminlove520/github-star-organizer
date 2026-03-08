@@ -8,7 +8,7 @@ from pathlib import Path
 class GitHubConfig:
     username: str
     token: str
-    user_session: str
+    cookies: str  # Full cookie string from browser
 
 
 @dataclass
@@ -16,12 +16,14 @@ class LLMConfig:
     base_url: str
     api_key: str
     model: str
+    concurrency: int = 3
 
 
 @dataclass
 class Config:
     github: GitHubConfig
     llm: LLMConfig
+    concurrency: int = 5  # GitHub web API concurrency
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -37,17 +39,19 @@ def load_config(path: Path | None = None) -> Config:
         raw = tomllib.load(f)
 
     gh = raw["github"]
-    session = gh.get("session", {})
+    session = gh["session"]
 
     return Config(
         github=GitHubConfig(
             username=gh["username"],
             token=gh["token"],
-            user_session=session["user_session"],
+            cookies=session["cookies"],
         ),
         llm=LLMConfig(
             base_url=raw["llm"]["base_url"],
             api_key=raw["llm"]["api_key"],
             model=raw["llm"]["model"],
+            concurrency=raw["llm"].get("concurrency", 3),
         ),
+        concurrency=raw.get("concurrency", 5),
     )
