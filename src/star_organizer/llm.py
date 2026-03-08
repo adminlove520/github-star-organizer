@@ -1,20 +1,17 @@
 import json
 
 from openai import AsyncOpenAI
-from rich.console import Console
 
 from .config import LLMConfig
 from .models import Assignment, CategorizationResult, StarList, StarredRepo
 
-console = Console()
-
 SYSTEM_PROMPT = """You are a GitHub repository organizer. Your job is to categorize starred repositories into meaningful lists.
 
 Rules:
-1. Prefer reusing existing lists when appropriate.
-2. Create new lists only when no existing list fits well.
+1. Prefer reusing existing lists when appropriate — ALWAYS reuse before creating new.
+2. Keep the TOTAL number of lists under 32 (GitHub's hard limit). Use broad categories, not fine-grained ones.
 3. Each repo should be assigned to exactly ONE list (the best fit).
-4. List names should be concise and descriptive (e.g., "AI/ML Tools", "Vue Ecosystem", "CLI Utilities").
+4. List names should be concise and broad (e.g., "AI/ML", "Web Frameworks", "DevOps", "CLI Tools"). Avoid overly specific names.
 5. Respond ONLY with valid JSON, no markdown fences."""
 
 USER_PROMPT_TEMPLATE = """Here are the existing star lists:
@@ -51,22 +48,23 @@ async def categorize_repos(
     cfg: LLMConfig,
     repos: list[StarredRepo],
     existing_lists: list[StarList],
+    on_batch: callable = None,
 ) -> CategorizationResult:
-    """Use LLM to categorize repos into lists. Batches if needed."""
+    """Use LLM to categorize repos into lists.
+
+    on_batch(batch_idx, total_batches) is called before each batch if provided.
+    """
     client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
     all_assignments: list[Assignment] = []
     all_new_lists: set[str] = set()
 
-    # Accumulate list names across batches so LLM sees previously created ones
     known_list_names = {sl.name for sl in existing_lists}
-
     batches = [repos[i : i + BATCH_SIZE] for i in range(0, len(repos), BATCH_SIZE)]
-    console.print(f"  Processing {len(repos)} repos in {len(batches)} batch(es)...")
 
     for batch_idx, batch in enumerate(batches):
-        console.print(f"  Batch {batch_idx + 1}/{len(batches)} ({len(batch)} repos)...")
+        if on_batch:
+            on_batch(batch_idx + 1, len(batches), len(batch))
 
-        # Build fake StarList objects for new lists from prior batches
         all_lists_for_prompt = list(existing_lists) + [
             StarList(id="", name=n) for n in all_new_lists
         ]

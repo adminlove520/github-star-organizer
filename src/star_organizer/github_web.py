@@ -133,7 +133,7 @@ async def create_star_list(
             match = re.search(r"/lists/([^/?]+)", content)
             return match.group(1) if match else None
 
-    console.print(f"[yellow]Warning: Unexpected status {resp.status_code} creating list '{name}'[/yellow]")
+    console.print(f"[yellow]Warning: status {resp.status_code} creating list '{name}': {resp.text[:200]}[/yellow]")
     return None
 
 
@@ -204,9 +204,9 @@ class GitHubWebClient:
         return self._csrf_token
 
     async def create_list(self, name: str, any_repo: StarredRepo) -> StarList | None:
-        """Create a list and return it with its ID."""
-        if not self._csrf_token:
-            await self.refresh_csrf(any_repo)
+        """Create a list and return it with its ID. Refreshes CSRF before each call."""
+        # Always refresh CSRF — token is single-use for POST
+        await self.refresh_csrf(any_repo)
 
         slug = await create_star_list(
             self.client, self.cfg, name, self._csrf_token or ""
@@ -214,10 +214,9 @@ class GitHubWebClient:
         await asyncio.sleep(self._delay)
 
         if slug is None:
-            console.print(f"[red]Failed to create list: {name}[/red]")
             return None
 
-        # Re-fetch lists to get the new list's ID
+        # Re-fetch lists to get the new list's ID + fresh CSRF
         self._lists, self._csrf_token = await fetch_star_lists(
             self.client, self.cfg, any_repo
         )
@@ -232,15 +231,14 @@ class GitHubWebClient:
         self, repo: StarredRepo, target_list_ids: list[str], any_repo: StarredRepo
     ) -> bool:
         """Assign repo to lists, merging with existing assignments for idempotency."""
-        # Get current assignments
+        # Get current assignments + fresh CSRF from this GET
         current_ids = await fetch_repo_current_lists(self.client, self.cfg, repo)
         await asyncio.sleep(self._delay)
 
-        # Merge: keep existing + add new
         merged = list(set(current_ids) | set(target_list_ids))
 
-        if not self._csrf_token:
-            await self.refresh_csrf(any_repo)
+        # Refresh CSRF before POST
+        await self.refresh_csrf(any_repo)
 
         result = await assign_repo_to_lists(
             self.client, self.cfg, repo, merged, self._csrf_token or ""

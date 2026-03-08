@@ -1,17 +1,19 @@
 import httpx
-from rich.console import Console
 
 from .config import GitHubConfig
 from .models import StarredRepo
 
-console = Console()
 
+async def fetch_starred_repos(
+    cfg: GitHubConfig,
+    on_page: callable = None,
+) -> list[StarredRepo]:
+    """Fetch all starred repos via GitHub REST API with pagination.
 
-async def fetch_starred_repos(cfg: GitHubConfig) -> list[StarredRepo]:
-    """Fetch all starred repos via GitHub REST API with pagination."""
+    on_page(page, count_so_far) is called after each page if provided.
+    """
     repos: list[StarredRepo] = []
     url = "https://api.github.com/user/starred"
-    params = {"per_page": "100", "page": "1"}
     headers = {
         "Authorization": f"Bearer {cfg.token}",
         "Accept": "application/vnd.github+json",
@@ -21,9 +23,7 @@ async def fetch_starred_repos(cfg: GitHubConfig) -> list[StarredRepo]:
     async with httpx.AsyncClient(headers=headers, timeout=30) as client:
         page = 1
         while True:
-            params["page"] = str(page)
-            console.print(f"  Fetching starred repos page {page}...")
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params={"per_page": "100", "page": str(page)})
             resp.raise_for_status()
 
             data = resp.json()
@@ -42,11 +42,11 @@ async def fetch_starred_repos(cfg: GitHubConfig) -> list[StarredRepo]:
                     )
                 )
 
-            # Check Link header for next page
-            link = resp.headers.get("link", "")
-            if 'rel="next"' not in link:
+            if on_page:
+                on_page(page, len(repos))
+
+            if 'rel="next"' not in resp.headers.get("link", ""):
                 break
             page += 1
 
-    console.print(f"  Fetched {len(repos)} starred repos.")
     return repos
