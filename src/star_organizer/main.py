@@ -123,10 +123,13 @@ async def run(dry_run: bool = False, no_cache: bool = False, config_path: Path |
         else:
             # All repos already cached, reconstruct result from cache
             from .models import Assignment, CategorizationResult
+            starred_names = {repo.full_name for repo in repos}
+            cached_filtered = {r: l for r, l in cached_assignments.items() if r in starred_names}
+            existing_names = {sl.name for sl in existing_lists}
+            cached_new_lists = sorted(set(cached_filtered.values()) - existing_names)
             result = CategorizationResult(
-                assignments=[Assignment(repo=r, list_name=l) for r, l in cached_assignments.items()
-                             if r in {repo.full_name for repo in repos}],
-                new_lists=[],
+                assignments=[Assignment(repo=r, list_name=l) for r, l in cached_filtered.items()],
+                new_lists=cached_new_lists,
             )
             console.print("[green]✓[/green] All repos already categorized [dim](skipped LLM)[/dim]")
 
