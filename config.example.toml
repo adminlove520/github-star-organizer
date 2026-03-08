@@ -1,0 +1,11 @@
+[github]
+username = "your-username"
+token = "ghp_xxxx"           # GitHub personal access token
+
+[github.session]
+user_session = "DVI0kn..."   # Copy from browser DevTools → Cookies
+
+[llm]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-xxxx"
+model = "gpt-4o"
