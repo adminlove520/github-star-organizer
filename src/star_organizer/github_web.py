@@ -292,6 +292,7 @@ async def assign_repo_to_lists(
     csrf_token: str,
 ) -> bool:
     """Assign a repo to lists via multipart form POST (PUT semantics)."""
+    await asyncio.sleep(1)  # Rate limiting - wait 1s between assignments
     url = f"https://github.com/{repo.full_name}/lists"
 
     fields: list[tuple[str, tuple[None, str]]] = [
@@ -330,7 +331,7 @@ class GitHubWebClient:
         self.cfg = cfg
         self.client = httpx.AsyncClient(timeout=30)
         self._lists: list[StarList] = []
-        self._delay = 1.0
+        self._delay = 2.0  # Increased to avoid rate limiting
 
     async def close(self) -> None:
         await self.client.aclose()

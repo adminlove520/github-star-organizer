@@ -1,0 +1,48 @@
+name: Organize GitHub Stars
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * 0'
+
+jobs:
+  organize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run organizer
+        env:
+          GH_USERNAME: ${{ secrets.GH_USERNAME }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_COOKIES: ${{ secrets.GH_COOKIES }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cat > config.toml << EOF
+          [github]
+          username = "${GH_USERNAME}"
+          token = "${GH_TOKEN}"
+
+          [github.session]
+          cookies = "${GH_COOKIES}"
+
+          [llm]
+          base_url = "https://api.openai.com/v1"
+          api_key = "${OPENAI_API_KEY}"
+          model = "gpt-4o"
+          concurrency = 3
+          EOF
+          
+          echo "y" | uv run python -m star_organizer
