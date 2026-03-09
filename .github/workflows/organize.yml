@@ -2,14 +2,8 @@ name: Organize GitHub Stars
 
 on:
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Dry run mode'
-        required: false
-        default: 'false'
-        type: boolean
   schedule:
-    - cron: '0 18 * * 0'  # 每周日 18:00 自动运行
+    - cron: '0 18 * * 0'
 
 jobs:
   organize:
@@ -29,29 +23,26 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Create config
+      - name: Run organizer
+        env:
+          GH_USERNAME: ${{ secrets.GH_USERNAME }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_COOKIES: ${{ secrets.GH_COOKIES }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           cat > config.toml << EOF
           [github]
-          username = "${{ secrets.GH_USERNAME }}"
-          token = "${{ secrets.GH_TOKEN }}"
+          username = "${GH_USERNAME}"
+          token = "${GH_TOKEN}"
 
           [github.session]
-          cookies = "${{ secrets.GH_COOKIES }}"
+          cookies = "${GH_COOKIES}"
 
           [llm]
           base_url = "https://api.openai.com/v1"
-          api_key = "${{ secrets.OPENAI_API_KEY }}"
+          api_key = "${OPENAI_API_KEY}"
           model = "gpt-4o"
           concurrency = 3
           EOF
-
-      - name: Run organizer
-        run: |
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            uv run python -m star_organizer --dry-run
-          else
-            uv run python -m star_organizer
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          echo "y" | uv run python -m star_organizer
