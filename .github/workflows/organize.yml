@@ -1,0 +1,57 @@
+name: Organize GitHub Stars
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode'
+        required: false
+        default: 'false'
+        type: boolean
+  schedule:
+    - cron: '0 18 * * 0'  # 每周日 18:00 自动运行
+
+jobs:
+  organize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Create config
+        run: |
+          cat > config.toml << EOF
+          [github]
+          username = "${{ secrets.GITHUB_USERNAME }}"
+          token = "${{ secrets.GITHUB_TOKEN }}"
+
+          [github.session]
+          cookies = "${{ secrets.GITHUB_COOKIES }}"
+
+          [llm]
+          base_url = "${{ secrets.LLM_BASE_URL }}"
+          api_key = "${{ secrets.LLM_API_KEY }}"
+          model = "${{ secrets.LLM_MODEL }}"
+          concurrency = 3
+          EOF
+
+      - name: Run organizer
+        run: |
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            uv run python -m star_organizer --dry-run
+          else
+            uv run python -m star_organizer
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
