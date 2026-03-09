@@ -10,9 +10,9 @@
 
 | Secret | 说明 | 示例 |
 |--------|------|------|
-| `GH_USERNAME` | 你的 GitHub 用户名 | `adminlove520` |
-| `GH_TOKEN` | GitHub Personal Access Token | `ghp_xxx` |
-| `GH_COOKIES` | 浏览器 cookie 字符串 | `_octo=...; user_session=...` |
+| `GITHUB_USERNAME` | 你的 GitHub 用户名 | `adminlove520` |
+| `GITHUB_TOKEN` | GitHub Personal Access Token | `ghp_xxx` |
+| `GITHUB_COOKIES` | 浏览器 cookie 字符串 | `_octo=...; user_session=...` |
 | `LLM_BASE_URL` | LLM API 端点 | `https://api.openai.com/v1` |
 | `LLM_API_KEY` | LLM API Key | `sk-xxx` |
 | `LLM_MODEL` | 模型名 | `gpt-4o` |
