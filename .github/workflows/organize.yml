@@ -33,16 +33,16 @@ jobs:
         run: |
           cat > config.toml << EOF
           [github]
-          username = "${{ secrets.GITHUB_USERNAME }}"
-          token = "${{ secrets.GITHUB_TOKEN }}"
+          username = "${{ secrets.GH_USERNAME }}"
+          token = "${{ secrets.GH_TOKEN }}"
 
           [github.session]
-          cookies = "${{ secrets.GITHUB_COOKIES }}"
+          cookies = "${{ secrets.GH_COOKIES }}"
 
           [llm]
-          base_url = "${{ secrets.LLM_BASE_URL }}"
-          api_key = "${{ secrets.LLM_API_KEY }}"
-          model = "${{ secrets.LLM_MODEL }}"
+          base_url = "https://api.openai.com/v1"
+          api_key = "${{ secrets.OPENAI_API_KEY }}"
+          model = "gpt-4o"
           concurrency = 3
           EOF
 
